@@ -43,14 +43,18 @@ switch:
 
 To teach-in the switch to your EnOcean device, put the device in learning mode and toggle the state of the switch entity in Home Assistant.
 
-### Climate device
+### Climate devices
 
-The custom integration adds support for heating controller Thermokon SRC-D08. The climate entity takes temperature readings from a sensor entity and sends target temperature commands to the heating controller.
+The custom integration adds support for different climate/heating devices.
+
+#### Thermokon SRC-D08
+
+The climate entity takes temperature readings from a sensor entity and sends target temperature commands to the heating controller.
 Currently supported HVAC modes are `off` and `heat` with preset modes `comfort`, `sleep` and `away`.
 
 Configuration variables:
 
-- `device_type`: Device type of the heating controller. Currently only `"SRC-D08"` is supported.
+- `device_type`: Set to `"SRC-D08"` for this device type.
 - `name`: entity name
 - `id`: EnOcean ID to send temperature set point commands to the heating controller. Must fit to your [dongle's base ID](https://community.home-assistant.io/t/enocean-switch/1958/36). Commands replicate EnOcean room operating panel telegrams and use EEP A5-10-06 format.
 - `id_switch`: EnOcean ID to send digital switch commands to the heating controller. Must fit to your [dongle's base ID](https://community.home-assistant.io/t/enocean-switch/1958/36).
@@ -112,6 +116,55 @@ target:
   entity_id:
     - climate.heating_controller_livingroom
 ```
+
+#### Pilot Wire Heating Module (D2-01-0C)
+
+Support for French "fil pilote" (pilot wire) electric heater controllers using EnOcean Equipment Profile EEP D2-01-0C. This includes devices like the NodOn Pilot Wire Heating Module.
+
+Pilot wire heating systems use signal-based control instead of precise temperature setpoints. The heater itself manages the actual temperature based on the received mode signal.
+
+**Supported HVAC modes:**
+- `off`: Heater completely off
+- `heat`: Heater active with selected preset mode
+
+**Supported preset modes:**
+
+| Preset Mode | Description |
+|-------------|-------------|
+| `comfort` | Full heating at comfort temperature |
+| `eco` | Reduced heating (typically comfort - 3.5°C) |
+| `frost_protection` | Minimum heating to prevent freezing |
+| `comfort_-1` | Comfort temperature minus 1°C |
+| `comfort_-2` | Comfort temperature minus 2°C |
+
+Configuration variables:
+
+- `device_type`: Set to `"D2-01-0C"` for pilot wire devices.
+- `name`: Entity name
+- `id`: EnOcean ID to send commands to the pilot wire module. Must fit to your [dongle's base ID](https://community.home-assistant.io/t/enocean-switch/1958/36).
+
+Example definition of a pilot wire climate entity:
+
+```yaml
+climate:
+  - platform: enocean_custom
+    name: radiateur_salon
+    device_type: "D2-01-0C"
+    id: [0xFF, 0xD9, 0x04, 0x81]
+```
+
+##### Teach-In
+
+To pair the pilot wire module with Home Assistant, put the device in learning mode and call the teach-in service:
+
+```yaml
+service: enocean_custom.climate_pilot_wire_teach_in
+target:
+  entity_id:
+    - climate.radiateur_salon
+```
+
+The module supports bidirectional communication: it will send status updates back to Home Assistant when the mode changes (e.g., via local control or another controller).
 
 ### Integration services
 

@@ -55,7 +55,7 @@ from homeassistant.helpers.event import (
 from .const import DOMAIN, LOGGER
 from .device import EnOceanEntity
 
-DEVICE_SUPPORTED_LIST = ["SRC-D08"]
+DEVICE_SUPPORTED_LIST = ["SRC-D08", "D2-01-0C"]
 '''
 Thermostat messages EEP A5-10-06
 DB3: not used
@@ -85,6 +85,20 @@ ATTR_PI_CONTROL_UNIT = "PI_control_unit"
 ATTR_TEMPERATURE_COMFORT = "temperature_comfort"
 ATTR_TEMPERATURE_SLEEP = "temperature_sleep"
 ATTR_TEMPERATURE_AWAY =  "temperature_away"
+
+# Pilot Wire (Fil Pilote) preset modes for D2-01-0C
+PRESET_COMFORT_MINUS_1 = "comfort_-1"
+PRESET_COMFORT_MINUS_2 = "comfort_-2"
+PRESET_FROST_PROTECTION = "frost_protection"
+PRESET_ECO = "eco"
+
+# Pilot Wire mode values (CMD 0x08)
+PILOT_WIRE_MODE_OFF = 0
+PILOT_WIRE_MODE_COMFORT = 1
+PILOT_WIRE_MODE_ECO = 2
+PILOT_WIRE_MODE_FROST_PROTECTION = 3
+PILOT_WIRE_MODE_COMFORT_MINUS_1 = 4
+PILOT_WIRE_MODE_COMFORT_MINUS_2 = 5
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -163,20 +177,29 @@ async def async_setup_platform(
         return
 
     _migrate_to_new_unique_id(hass, dev_id, 0)
-    add_entities([EnOceanClimate(
-        dev_id,
-        dev_name,
-        sender_id_switch,
-        sensor_entity_id,
-        target_temp_frost_protection,
-        sensor_target_temp_range,
-        sensor_target_temp_tolerance,
-        target_temp_base,
-        target_temp_reduction_night,
-        command_frequency,
-        pi_control_Kp,
-        pi_control_Tn,
-    )])
+
+    if device_type == "D2-01-0C":
+        # Pilot Wire Heating Module
+        add_entities([EnOceanPilotWireClimate(
+            dev_id,
+            dev_name,
+        )])
+    else:
+        # SRC-D08 or other thermostat devices
+        add_entities([EnOceanClimate(
+            dev_id,
+            dev_name,
+            sender_id_switch,
+            sensor_entity_id,
+            target_temp_frost_protection,
+            sensor_target_temp_range,
+            sensor_target_temp_tolerance,
+            target_temp_base,
+            target_temp_reduction_night,
+            command_frequency,
+            pi_control_Kp,
+            pi_control_Tn,
+        )])
 
     platform = entity_platform.EntityPlatform(
         hass=hass,
@@ -189,6 +212,7 @@ async def async_setup_platform(
         )
     platform.async_register_entity_service('climate_teach_in_actor', {}, "teach_in_actor")
     platform.async_register_entity_service('climate_teach_in_actor_switch', {}, "teach_in_actor_switch")
+    platform.async_register_entity_service('climate_pilot_wire_teach_in', {}, "teach_in_pilot_wire")
 
 class EnOceanClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
     """Representation of an EnOcean climate device."""
@@ -625,3 +649,215 @@ class EnOceanClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
             # Checksum byte
             command.extend([0x00])
             self.send_command(command, [], 0x01)
+
+
+class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
+    """Representation of an EnOcean Pilot Wire (Fil Pilote) Heating Module.
+
+    Supported EEPs (EnOcean Equipment Profiles):
+    - D2-01-0C (Electronic switches and dimmers with Energy Measurement - Pilot Wire)
+
+    This device controls French "fil pilote" electric heaters with 6 operating modes:
+    - Comfort: Full heating
+    - Eco: Reduced heating (typically comfort - 3.5°C)
+    - Frost Protection: Minimum heating to prevent freezing
+    - Off: Heater completely off
+    - Comfort -1°C: Comfort temperature minus 1°C
+    - Comfort -2°C: Comfort temperature minus 2°C
+    """
+
+    # Mapping between preset modes and pilot wire mode values
+    PRESET_TO_PILOT_WIRE = {
+        PRESET_COMFORT: PILOT_WIRE_MODE_COMFORT,
+        PRESET_ECO: PILOT_WIRE_MODE_ECO,
+        PRESET_FROST_PROTECTION: PILOT_WIRE_MODE_FROST_PROTECTION,
+        PRESET_COMFORT_MINUS_1: PILOT_WIRE_MODE_COMFORT_MINUS_1,
+        PRESET_COMFORT_MINUS_2: PILOT_WIRE_MODE_COMFORT_MINUS_2,
+    }
+
+    PILOT_WIRE_TO_PRESET = {v: k for k, v in PRESET_TO_PILOT_WIRE.items()}
+
+    def __init__(self, dev_id, dev_name):
+        """Initialize the EnOcean Pilot Wire climate device."""
+        super().__init__(dev_id, dev_name)
+        self._attr_temperature_unit = UnitOfTemperature.CELSIUS
+        self._sender_id = dev_id
+        self._attr_supported_features = ClimateEntityFeature.PRESET_MODE | ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
+        self._attr_hvac_modes = [HVACMode.HEAT, HVACMode.OFF]
+        self._attr_hvac_mode = None
+        self._attr_preset_mode = PRESET_COMFORT
+        self._attr_preset_modes = [
+            PRESET_COMFORT,
+            PRESET_ECO,
+            PRESET_FROST_PROTECTION,
+            PRESET_COMFORT_MINUS_1,
+            PRESET_COMFORT_MINUS_2,
+        ]
+        self._attr_unique_id = generate_unique_id(dev_id, 0)
+        self._pilot_wire_mode = PILOT_WIRE_MODE_COMFORT
+
+    async def async_added_to_hass(self) -> None:
+        """Run when entity about to be added."""
+        await super().async_added_to_hass()
+
+        # Check if we have an old state to restore
+        if (old_state := await self.async_get_last_state()) is not None:
+            if old_state.state in [HVACMode.HEAT, HVACMode.OFF]:
+                self._attr_hvac_mode = HVACMode(old_state.state)
+            if (
+                self._attr_preset_modes
+                and old_state.attributes.get(ATTR_PRESET_MODE) in self._attr_preset_modes
+            ):
+                self._attr_preset_mode = old_state.attributes.get(ATTR_PRESET_MODE)
+                self._pilot_wire_mode = self.PRESET_TO_PILOT_WIRE.get(
+                    self._attr_preset_mode, PILOT_WIRE_MODE_COMFORT
+                )
+        else:
+            _LOGGER.info(
+                "No previously saved state for %s, setting defaults", self.dev_name
+            )
+
+        # Set default state to off if not restored
+        if self._attr_hvac_mode in [None, STATE_UNKNOWN, STATE_UNAVAILABLE]:
+            self._attr_hvac_mode = HVACMode.OFF
+
+    @property
+    def name(self):
+        """Return the name of the device."""
+        return self.dev_name
+
+    @property
+    def hvac_action(self):
+        """Return the current running hvac operation."""
+        if self._attr_hvac_mode == HVACMode.OFF:
+            return HVACAction.OFF
+        if self._pilot_wire_mode == PILOT_WIRE_MODE_OFF:
+            return HVACAction.OFF
+        if self._pilot_wire_mode == PILOT_WIRE_MODE_FROST_PROTECTION:
+            return HVACAction.IDLE
+        return HVACAction.HEATING
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Set HVAC mode."""
+        if hvac_mode == HVACMode.HEAT:
+            self._attr_hvac_mode = HVACMode.HEAT
+            # Send the current preset mode when turning on
+            self._send_pilot_wire_mode(self._pilot_wire_mode)
+        elif hvac_mode == HVACMode.OFF:
+            self._attr_hvac_mode = HVACMode.OFF
+            self._send_pilot_wire_mode(PILOT_WIRE_MODE_OFF)
+        else:
+            _LOGGER.error("Unrecognized hvac mode: %s", hvac_mode)
+            return
+        self.async_write_ha_state()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set new preset mode."""
+        if preset_mode not in (self.preset_modes or []):
+            raise ValueError(
+                f"Got unsupported preset_mode {preset_mode}. Must be one of {self.preset_modes}"
+            )
+
+        self._attr_preset_mode = preset_mode
+        self._pilot_wire_mode = self.PRESET_TO_PILOT_WIRE.get(
+            preset_mode, PILOT_WIRE_MODE_COMFORT
+        )
+
+        # Only send command if HVAC is on
+        if self._attr_hvac_mode == HVACMode.HEAT:
+            self._send_pilot_wire_mode(self._pilot_wire_mode)
+
+        self.async_write_ha_state()
+
+    def _send_pilot_wire_mode(self, mode: int) -> None:
+        """Send pilot wire mode command to the device.
+
+        Uses D2-01 VLD telegram with CMD 0x08 (Actuator Set Pilot Wire Mode).
+
+        Packet structure (3 bytes):
+        - Byte 0: CMD (4 bits) + Pilot Wire Mode (4 bits)
+        - Followed by sender ID
+        """
+        _LOGGER.debug(
+            "Sending pilot wire mode %d to %s", mode, self.dev_name
+        )
+
+        # CMD 0x08 (Set Pilot Wire Mode) in upper nibble, channel 0 in lower nibble
+        # Byte structure: CMD=0x08, IO channel=0x00, Pilot Wire Mode
+        cmd_byte = 0x08  # CMD = Set Pilot Wire Mode
+        io_channel = 0x00  # Channel 0
+
+        # Build VLD packet for D2-01-0C
+        # Format: RORG + CMD/IO + PilotWireMode + SenderID + Status
+        command = [0xD2]  # RORG = VLD
+        command.append((cmd_byte << 4) | io_channel)  # CMD (upper nibble) + IO channel (lower nibble)
+        command.append(mode & 0x0F)  # Pilot Wire Mode (only lower nibble used)
+        command.extend(self._sender_id)
+        command.append(0x00)  # Status
+
+        self.send_command(command, [], 0x01)
+
+    def value_changed(self, packet):
+        """Handle incoming packets from the device.
+
+        Processes CMD 0x0A (Actuator Pilot Wire Mode Response) to update state.
+        """
+        if packet.data[0] != 0xD2:
+            return
+
+        # Check if this is a Pilot Wire Mode Response (CMD 0x0A)
+        cmd = (packet.data[1] >> 4) & 0x0F
+        if cmd == 0x0A:  # Pilot Wire Mode Response
+            mode = packet.data[2] & 0x0F
+            _LOGGER.debug(
+                "Received pilot wire mode response: mode=%d for %s", mode, self.dev_name
+            )
+
+            if mode == PILOT_WIRE_MODE_OFF:
+                self._attr_hvac_mode = HVACMode.OFF
+                self._pilot_wire_mode = mode
+            else:
+                self._attr_hvac_mode = HVACMode.HEAT
+                self._pilot_wire_mode = mode
+                self._attr_preset_mode = self.PILOT_WIRE_TO_PRESET.get(
+                    mode, PRESET_COMFORT
+                )
+
+            self.schedule_update_ha_state()
+
+    def teach_in_pilot_wire(self) -> None:
+        """Send teach-in telegram for D2-01-0C device.
+
+        Uses UTE (Universal Teach-In) for bidirectional communication.
+        """
+        _LOGGER.info("Sending teach-in for pilot wire device %s", self.dev_name)
+
+        # UTE teach-in for D2-01-0C
+        # RORG: 0xD4 (UTE - Universal Teach-In)
+        # EEP: D2-01-0C
+        command = [0xD4]  # UTE RORG
+        # UTE query with bidirectional communication request
+        # Byte 1: Communication type (bidirectional, teach-in request)
+        command.append(0x20)  # Teach-in request, bidirectional
+        # Bytes 2-4: EEP (D2-01-0C) - RORG, FUNC, TYPE
+        command.append(0xD2)  # RORG
+        command.append(0x01)  # FUNC
+        command.append(0x0C)  # TYPE
+        # Manufacturer ID (0x00 0x46 = NodOn, or use 0x7FF for generic)
+        command.append(0x00)
+        command.append(0x46)
+        command.extend(self._sender_id)
+        command.append(0x00)  # Status
+
+        self.send_command(command, [], 0x01)
+
+    def teach_in_actor(self) -> None:
+        """Alias for teach_in_pilot_wire for compatibility."""
+        self.teach_in_pilot_wire()
+
+    def teach_in_actor_switch(self) -> None:
+        """Not applicable for pilot wire devices."""
+        _LOGGER.warning(
+            "teach_in_actor_switch is not applicable for pilot wire device %s",
+            self.dev_name
+        )
