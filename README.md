@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
 > Custom EnOcean integration for Home Assistant, fork of the official integration.
-
+FORK of THE FOR!!!!! for personal tests
 ## Background
 
 The official EnOcean integration for Home Assistant is currently not being extended by new functionality as the code needs a major refactory. Pull requests to add new sensors etc. are [not being accepted](https://github.com/home-assistant/core/pull/86461#discussion_r1084908489). That is why this custom integration was created. Also, the EnOcean protocol library being used by Home Assistant seems to be abandoned, that is why a fork is included in this custom integration.
