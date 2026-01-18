@@ -34,13 +34,16 @@ def build_set_pilot_wire_mode_packet(sender_id: list, mode: int, channel: int = 
     Args:
         sender_id: 4-byte sender ID [byte0, byte1, byte2, byte3]
         mode: Pilot wire mode value (0-5)
-        channel: I/O channel (default 0)
+        channel: I/O channel (default 0, not used for pilot wire)
 
     Returns:
         List of bytes representing the packet data
+        
+    Note: For pilot wire commands (D2-01-0C), the CMD is sent as a direct byte value (0x08),
+    NOT shifted to the upper nibble. This matches Jeedom's working implementation.
     """
     packet = [RORG_VLD]  # RORG = VLD
-    packet.append((CMD_SET_PILOT_WIRE_MODE << 4) | (channel & 0x0F))  # CMD + channel
+    packet.append(CMD_SET_PILOT_WIRE_MODE)  # CMD 0x08 (NOT shifted!)
     packet.append(mode & 0x0F)  # Mode value
     packet.extend(sender_id)
     packet.append(0x00)  # Status
@@ -54,14 +57,16 @@ def parse_pilot_wire_response(data: list) -> dict:
         data: Raw packet data bytes
 
     Returns:
-        Dictionary with parsed values: rorg, cmd, channel, mode, sender_id
+        Dictionary with parsed values: rorg, cmd, mode, sender_id
+        
+    Note: For pilot wire responses, CMD is in lower nibble (or full byte).
+    Based on Jeedom's parsing where byte 0x0A gives CMD=10.
     """
     if len(data) < 3:
         raise ValueError("Packet too short")
 
     rorg = data[0]
-    cmd = (data[1] >> 4) & 0x0F
-    channel = data[1] & 0x0F
+    cmd = data[1] & 0x0F  # CMD in lower nibble for pilot wire
     mode = data[2] & 0x0F
 
     sender_id = data[3:7] if len(data) >= 7 else []
@@ -69,7 +74,6 @@ def parse_pilot_wire_response(data: list) -> dict:
     return {
         "rorg": rorg,
         "cmd": cmd,
-        "channel": channel,
         "mode": mode,
         "sender_id": sender_id,
     }
@@ -184,7 +188,8 @@ class TestBuildSetPilotWireModePacket:
         sender_id = [0xFF, 0xD9, 0x04, 0x81]
         packet = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_COMFORT)
 
-        expected = [0xD2, 0x80, 0x01, 0xFF, 0xD9, 0x04, 0x81, 0x00]
+        # Note: CMD 0x08 is sent directly (not shifted) - matches Jeedom format
+        expected = [0xD2, 0x08, 0x01, 0xFF, 0xD9, 0x04, 0x81, 0x00]
         assert packet == expected
 
     def test_off_mode_packet(self):
@@ -193,7 +198,7 @@ class TestBuildSetPilotWireModePacket:
         packet = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_OFF)
 
         assert packet[0] == RORG_VLD
-        assert packet[1] == 0x80  # CMD 0x08, channel 0
+        assert packet[1] == 0x08  # CMD 0x08 (direct value, not shifted)
         assert packet[2] == 0x00  # Mode OFF
         assert packet[3:7] == sender_id
 
@@ -232,71 +237,60 @@ class TestBuildSetPilotWireModePacket:
 
         assert len(packet) == 8  # RORG + CMD/ch + mode + 4 sender + status
 
-    def test_different_channel(self):
-        """Test building packet with different channel."""
-        sender_id = [0x01, 0x02, 0x03, 0x04]
-        packet = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_COMFORT, channel=1)
-
-        assert packet[1] == 0x81  # CMD 0x08, channel 1
-
-    def test_cmd_byte_encoding(self):
-        """Test CMD byte is correctly encoded."""
+    def test_cmd_byte_is_direct_value(self):
+        """Test CMD byte is sent directly (not shifted).
+        
+        Note: Pilot wire commands don't use channels - CMD is sent as full byte value.
+        This matches Jeedom's working implementation.
+        """
         sender_id = [0x01, 0x02, 0x03, 0x04]
         packet = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_COMFORT)
 
-        cmd_byte = packet[1]
-        cmd = (cmd_byte >> 4) & 0x0F
-        channel = cmd_byte & 0x0F
-
-        assert cmd == CMD_SET_PILOT_WIRE_MODE
-        assert channel == 0
+        # CMD 0x08 should be sent directly, NOT shifted to upper nibble
+        assert packet[1] == CMD_SET_PILOT_WIRE_MODE  # 0x08, not 0x80
 
 
 class TestParsePilotWireResponse:
     """Test parse_pilot_wire_response function."""
 
     def test_parse_comfort_response(self):
-        """Test parsing a comfort mode response."""
-        data = [0xD2, 0xA0, 0x01, 0xFF, 0xD9, 0x04, 0x81, 0x00]
+        """Test parsing a comfort mode response.
+        
+        Based on Jeedom's received packet: ['0xd2', '0xa', '0x1', ...]
+        CMD 0x0A is direct value (not shifted).
+        """
+        data = [0xD2, 0x0A, 0x01, 0xFF, 0xD9, 0x04, 0x81, 0x00]
         result = parse_pilot_wire_response(data)
 
         assert result["rorg"] == RORG_VLD
         assert result["cmd"] == CMD_PILOT_WIRE_MODE_RESPONSE
-        assert result["channel"] == 0
         assert result["mode"] == PILOT_WIRE_MODE_COMFORT
         assert result["sender_id"] == [0xFF, 0xD9, 0x04, 0x81]
 
     def test_parse_off_response(self):
         """Test parsing an OFF mode response."""
-        data = [0xD2, 0xA0, 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0x00]
+        data = [0xD2, 0x0A, 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0x00]
         result = parse_pilot_wire_response(data)
 
         assert result["mode"] == PILOT_WIRE_MODE_OFF
 
     def test_parse_eco_response(self):
         """Test parsing an ECO mode response."""
-        data = [0xD2, 0xA0, 0x02, 0x01, 0x02, 0x03, 0x04, 0x00]
+        data = [0xD2, 0x0A, 0x02, 0x01, 0x02, 0x03, 0x04, 0x00]
         result = parse_pilot_wire_response(data)
 
         assert result["mode"] == PILOT_WIRE_MODE_ECO
 
     def test_parse_frost_protection_response(self):
         """Test parsing a frost protection mode response."""
-        data = [0xD2, 0xA0, 0x03, 0x01, 0x02, 0x03, 0x04, 0x00]
+        data = [0xD2, 0x0A, 0x03, 0x01, 0x02, 0x03, 0x04, 0x00]
         result = parse_pilot_wire_response(data)
 
         assert result["mode"] == PILOT_WIRE_MODE_FROST_PROTECTION
 
-    def test_parse_response_with_channel(self):
-        """Test parsing response with non-zero channel."""
-        data = [0xD2, 0xA1, 0x01, 0x01, 0x02, 0x03, 0x04, 0x00]  # Channel 1
-        result = parse_pilot_wire_response(data)
-
-        assert result["channel"] == 1
-
     def test_parse_short_packet(self):
         """Test parsing short packet raises error."""
-        data = [0xD2, 0xA0]
+        data = [0xD2, 0x0A]
         try:
             parse_pilot_wire_response(data)
             assert False, "Should have raised ValueError"
@@ -306,7 +300,7 @@ class TestParsePilotWireResponse:
     def test_mode_masking(self):
         """Test that only lower nibble is used for mode."""
         # Upper nibble should be ignored
-        data = [0xD2, 0xA0, 0xF1, 0x01, 0x02, 0x03, 0x04, 0x00]
+        data = [0xD2, 0x0A, 0xF1, 0x01, 0x02, 0x03, 0x04, 0x00]
         result = parse_pilot_wire_response(data)
 
         assert result["mode"] == PILOT_WIRE_MODE_COMFORT  # 0xF1 & 0x0F = 0x01
@@ -425,17 +419,17 @@ class TestEdgeCases:
 
         assert packet[3:7] == sender_id
 
-    def test_channel_boundary(self):
-        """Test channel boundary values."""
+    def test_cmd_byte_consistent(self):
+        """Test CMD byte is always 0x08 for pilot wire commands.
+        
+        Note: Pilot wire commands don't use channels - CMD is sent as direct value.
+        """
         sender_id = [0x01, 0x02, 0x03, 0x04]
 
-        # Channel 0
-        packet0 = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_COMFORT, channel=0)
-        assert (packet0[1] & 0x0F) == 0
-
-        # Channel 15 (max 4-bit value)
-        packet15 = build_set_pilot_wire_mode_packet(sender_id, PILOT_WIRE_MODE_COMFORT, channel=15)
-        assert (packet15[1] & 0x0F) == 15
+        # All modes should have CMD 0x08
+        for mode in range(6):
+            packet = build_set_pilot_wire_mode_packet(sender_id, mode)
+            assert packet[1] == CMD_SET_PILOT_WIRE_MODE  # Always 0x08
 
     def test_mode_masking_on_build(self):
         """Test that only lower nibble is used when building."""

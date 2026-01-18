@@ -774,28 +774,32 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
 
         Uses D2-01 VLD telegram with CMD 0x08 (Actuator Set Pilot Wire Mode).
 
-        Packet structure (3 bytes):
-        - Byte 0: CMD (4 bits) + Pilot Wire Mode (4 bits)
-        - Followed by sender ID
+        Packet structure matching Jeedom's working format:
+        - Data: [0xD2, 0x08, mode, sender_id (4 bytes), 0x00]
+        - Optional: [0x03, destination_id (4 bytes), 0xFF, 0x00]
+        
+        Note: Pilot wire CMD (0x08) is NOT shifted - it's sent as direct value.
         """
         _LOGGER.debug(
             "Sending pilot wire mode %d to %s", mode, self.dev_name
         )
 
-        # CMD 0x08 (Set Pilot Wire Mode) in upper nibble, channel 0 in lower nibble
-        # Byte structure: CMD=0x08, IO channel=0x00, Pilot Wire Mode
-        cmd_byte = 0x08  # CMD = Set Pilot Wire Mode
-        io_channel = 0x00  # Channel 0
-
         # Build VLD packet for D2-01-0C
-        # Format: RORG + CMD/IO + PilotWireMode + SenderID + Status
+        # Format matches Jeedom: [0xD2, 0x08, mode, sender_id, status]
+        # Note: CMD 0x08 is sent directly, NOT shifted to upper nibble!
         command = [0xD2]  # RORG = VLD
-        command.append((cmd_byte << 4) | io_channel)  # CMD (upper nibble) + IO channel (lower nibble)
-        command.append(mode & 0x0F)  # Pilot Wire Mode (only lower nibble used)
+        command.append(0x08)  # CMD = Set Pilot Wire Mode (direct value, not shifted!)
+        command.append(mode & 0x0F)  # Pilot Wire Mode
         command.extend(self._sender_id)
         command.append(0x00)  # Status
 
-        self.send_command(command, [], 0x01)
+        # Optional data: subTelNum + destination + dBm + security
+        optional = [0x03]  # subTelNum (send 3 times)
+        optional.extend(self.dev_id)  # Destination = the device we're controlling
+        optional.append(0xFF)  # dBm
+        optional.append(0x00)  # Security level
+
+        self.send_command(command, optional, 0x01)
 
     def value_changed(self, packet):
         """Handle incoming packets from the device.
@@ -806,7 +810,8 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
             return
 
         # Check if this is a Pilot Wire Mode Response (CMD 0x0A)
-        cmd = (packet.data[1] >> 4) & 0x0F
+        # Note: For pilot wire commands, CMD is the full byte value (not shifted)
+        cmd = packet.data[1] & 0x0F  # CMD in lower nibble for responses
         if cmd == 0x0A:  # Pilot Wire Mode Response
             mode = packet.data[2] & 0x0F
             _LOGGER.debug(
