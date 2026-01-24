@@ -52,7 +52,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_time,
 )
 
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, DATA_ENOCEAN, ENOCEAN_DONGLE
 from .device import EnOceanEntity
 
 DEVICE_SUPPORTED_LIST = ["SRC-D08", "D2-01-0C"]
@@ -779,9 +779,22 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
         - Optional: [0x03, destination_id (4 bytes), 0xFF, 0x00]
         
         Note: Pilot wire CMD (0x08) is NOT shifted - it's sent as direct value.
+        The sender_id must be the DONGLE's base ID, not the device ID!
         """
+        # Get the dongle's base ID (this is what the NodOn is paired with)
+        try:
+            dongle = self.hass.data[DATA_ENOCEAN][ENOCEAN_DONGLE]
+            sender_id = dongle._communicator.base_id
+            if sender_id is None:
+                _LOGGER.error("Dongle base_id not available yet")
+                return
+        except (KeyError, AttributeError) as e:
+            _LOGGER.error("Cannot get dongle base_id: %s", e)
+            return
+
         _LOGGER.debug(
-            "Sending pilot wire mode %d to %s", mode, self.dev_name
+            "Sending pilot wire mode %d to %s (sender: %s)", 
+            mode, self.dev_name, [hex(b) for b in sender_id]
         )
 
         # Build VLD packet for D2-01-0C
@@ -790,7 +803,7 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
         command = [0xD2]  # RORG = VLD
         command.append(0x08)  # CMD = Set Pilot Wire Mode (direct value, not shifted!)
         command.append(mode & 0x0F)  # Pilot Wire Mode
-        command.extend(self._sender_id)
+        command.extend(sender_id)  # Dongle's base ID (what device is paired with)
         command.append(0x00)  # Status
 
         # Optional data: subTelNum + destination + dBm + security
@@ -835,7 +848,19 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
 
         Uses UTE (Universal Teach-In) for bidirectional communication.
         """
-        _LOGGER.info("Sending teach-in for pilot wire device %s", self.dev_name)
+        # Get the dongle's base ID
+        try:
+            dongle = self.hass.data[DATA_ENOCEAN][ENOCEAN_DONGLE]
+            sender_id = dongle._communicator.base_id
+            if sender_id is None:
+                _LOGGER.error("Dongle base_id not available yet")
+                return
+        except (KeyError, AttributeError) as e:
+            _LOGGER.error("Cannot get dongle base_id for teach-in: %s", e)
+            return
+
+        _LOGGER.info("Sending teach-in for pilot wire device %s (sender: %s)", 
+                     self.dev_name, [hex(b) for b in sender_id])
 
         # UTE teach-in for D2-01-0C
         # RORG: 0xD4 (UTE - Universal Teach-In)
@@ -851,7 +876,7 @@ class EnOceanPilotWireClimate(EnOceanEntity, ClimateEntity, RestoreEntity):
         # Manufacturer ID (0x00 0x46 = NodOn, or use 0x7FF for generic)
         command.append(0x00)
         command.append(0x46)
-        command.extend(self._sender_id)
+        command.extend(sender_id)  # Dongle's base ID
         command.append(0x00)  # Status
 
         self.send_command(command, [], 0x01)
