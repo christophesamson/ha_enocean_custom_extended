@@ -104,9 +104,9 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_ID, default=[]): vol.All(cv.ensure_list, [vol.Coerce(int)]),
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Required(CONF_SENDER_ID_SWITCH): vol.All(cv.ensure_list, [vol.Coerce(int)]),
+        vol.Optional(CONF_SENDER_ID_SWITCH): vol.All(cv.ensure_list, [vol.Coerce(int)]),
         vol.Required(CONF_DEVICE_TYPE): cv.string,
-        vol.Required(CONF_SENSOR_ENTITY_ID): cv.string,
+        vol.Optional(CONF_SENSOR_ENTITY_ID): cv.string,
         vol.Optional(CONF_SENSOR_TARGET_TEMP_FROST_PROTECTION, default=8.0): cv.positive_float,
         vol.Optional(CONF_SENSOR_TARGET_TEMP_RANGE, default=5): cv.positive_int,
         vol.Optional(CONF_SENSOR_TARGET_TEMP_TOLERANCE, default=0.5): cv.positive_float,
