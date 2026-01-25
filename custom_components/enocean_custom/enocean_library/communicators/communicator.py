@@ -75,10 +75,15 @@ class Communicator(threading.Thread):
                     self.logger.info('Sending response to UTE teach-in.')
                     self.send(response_packet)
 
-                if self.__callback is None:
+                # Always put RESPONSE packets in receive queue (needed for base_id)
+                # Also put in queue if no callback is set
+                if packet.packet_type == PACKET.RESPONSE or self.__callback is None:
                     self.receive.put(packet)
-                else:
+                
+                # Call the callback for non-RESPONSE packets (or all if no callback)
+                if self.__callback is not None and packet.packet_type != PACKET.RESPONSE:
                     self.__callback(packet)
+                
                 self.logger.debug(packet)
 
     @property
