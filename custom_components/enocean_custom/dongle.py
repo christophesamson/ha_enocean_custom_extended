@@ -38,6 +38,18 @@ class EnOceanDongle:
         self.dispatcher_disconnect_handle = async_dispatcher_connect(
             self.hass, SIGNAL_SEND_MESSAGE, self._send_message_callback
         )
+        
+        # Pre-fetch the dongle's base ID so it's available for entities
+        # This runs in executor to avoid blocking the event loop
+        import asyncio
+        base_id = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._communicator.base_id
+        )
+        if base_id:
+            _LOGGER.info("EnOcean dongle base ID: %s", 
+                        ":".join(f"{b:02X}" for b in base_id))
+        else:
+            _LOGGER.warning("Could not retrieve EnOcean dongle base ID")
 
     def unload(self):
         """Disconnect callbacks established at init time."""
